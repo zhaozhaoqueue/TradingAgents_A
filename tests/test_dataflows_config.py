@@ -12,7 +12,15 @@ from tradingagents.dataflows.config import get_config, set_config
 @pytest.mark.unit
 class DataflowsConfigIsolationTests(unittest.TestCase):
     def setUp(self):
-        set_config(copy.deepcopy(default_config.DEFAULT_CONFIG))
+        cfg = copy.deepcopy(default_config.DEFAULT_CONFIG)
+        cfg["market_region"] = "us"
+        cfg["data_vendors"] = {
+            "core_stock_apis": "yfinance",
+            "technical_indicators": "yfinance",
+            "fundamental_data": "yfinance",
+            "news_data": "yfinance",
+        }
+        set_config(cfg)
 
     def test_get_config_returns_deep_copy(self):
         cfg = get_config()

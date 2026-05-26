@@ -29,6 +29,8 @@ from tradingagents.agents.utils.agent_utils import (
 )
 from tradingagents.dataflows.reddit import fetch_reddit_posts
 from tradingagents.dataflows.stocktwits import fetch_stocktwits_messages
+from tradingagents.dataflows.a_share_utils import is_a_share_symbol
+from tradingagents.dataflows.config import get_config
 
 
 def _seven_days_back(trade_date: str) -> str:
@@ -53,8 +55,12 @@ def create_sentiment_analyst(llm):
         # returns a string (no exceptions surface from here), so the LLM
         # always sees something — either real data or a clear placeholder.
         news_block = get_news.func(ticker, start_date, end_date)
-        stocktwits_block = fetch_stocktwits_messages(ticker, limit=30)
-        reddit_block = fetch_reddit_posts(ticker)
+        if get_config().get("market_region") == "cn" or is_a_share_symbol(ticker):
+            stocktwits_block = "<not_applicable: StockTwits is not a primary A-share sentiment venue>"
+            reddit_block = "<not_applicable: Reddit is not a primary A-share sentiment venue>"
+        else:
+            stocktwits_block = fetch_stocktwits_messages(ticker, limit=30)
+            reddit_block = fetch_reddit_posts(ticker)
 
         system_message = _build_system_message(
             ticker=ticker,
@@ -106,6 +112,13 @@ def _build_system_message(
     reddit_block: str,
 ) -> str:
     """Assemble the sentiment-analyst system message with structured data blocks."""
+    cn_mode = get_config().get("market_region") == "cn" or is_a_share_symbol(ticker)
+    if cn_mode:
+        venue_guidance = """### China A-share sentiment venues
+For A-share analysis, StockTwits and Reddit are not primary sources. Treat the news block as the main available sentiment input for now, and explicitly flag that richer Chinese retail sentiment sources such as Eastmoney Guba/Xueqiu are not yet enabled unless they appear in the data."""
+    else:
+        venue_guidance = """### StockTwits messages — retail-trader social platform indexed by cashtag
+Fast-moving signal. Each message carries a user-labeled sentiment tag (Bullish / Bearish / no-label) plus the message body."""
     return f"""You are a financial market sentiment analyst. Your task is to produce a comprehensive sentiment report for {ticker} covering the period from {start_date} to {end_date}, drawing on three complementary data sources that have already been collected for you.
 
 ## Data sources (pre-fetched, in this prompt)
@@ -117,8 +130,7 @@ Institutional framing. Fact-driven, slower-moving signal.
 {news_block}
 <end_of_news>
 
-### StockTwits messages — retail-trader social platform indexed by cashtag
-Fast-moving signal. Each message carries a user-labeled sentiment tag (Bullish / Bearish / no-label) plus the message body.
+{venue_guidance}
 
 <start_of_stocktwits>
 {stocktwits_block}

@@ -2,6 +2,13 @@ import os
 
 _TRADINGAGENTS_HOME = os.path.join(os.path.expanduser("~"), ".tradingagents")
 
+_CN_DATA_VENDOR_DEFAULTS = {
+    "core_stock_apis": "tushare_pro,akshare",
+    "technical_indicators": "tushare_pro,akshare",
+    "fundamental_data": "tushare_pro",
+    "news_data": "search_news,akshare",
+}
+
 # Single source of truth for env-var → config-key overrides. To expose
 # a new config key for environment-based override, add a row here — no
 # entry-point script changes required. Coercion is driven by the type
@@ -17,6 +24,10 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_MAX_RISK_ROUNDS":      "max_risk_discuss_rounds",
     "TRADINGAGENTS_CHECKPOINT_ENABLED":   "checkpoint_enabled",
     "TRADINGAGENTS_BENCHMARK_TICKER":     "benchmark_ticker",
+    "TRADINGAGENTS_MARKET_REGION":        "market_region",
+    "TUSHARE_TOKEN":                      "tushare_token",
+    "SEARCH_NEWS_PROVIDER":               "search_news_provider",
+    "SEARCH_NEWS_API_KEY":                "search_news_api_key",
 }
 
 
@@ -38,6 +49,8 @@ def _apply_env_overrides(config: dict) -> dict:
         if raw is None or raw == "":
             continue
         config[key] = _coerce(raw, config.get(key))
+    if config.get("market_region") == "cn":
+        config["data_vendors"].update(_CN_DATA_VENDOR_DEFAULTS)
     return config
 
 
@@ -75,6 +88,9 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "max_risk_discuss_rounds": 1,
     "max_recur_limit": 100,
     "analyst_concurrency_limit": 1,
+    # Market region. ``us`` keeps the original yfinance / Alpha Vantage
+    # behavior; ``cn`` enables A-share defaults and China-specific prompts.
+    "market_region": "us",
     # News / data fetching parameters
     # Increase for longer lookback strategies or to broaden macro coverage;
     # decrease to reduce token usage in agent prompts.
@@ -90,6 +106,22 @@ DEFAULT_CONFIG = _apply_env_overrides({
         "ECB Bank of England BOJ central bank policy",
         "oil commodities supply chain energy",
     ],
+    "global_news_queries_cn": [
+        "中国 央行 利率 流动性 A股",
+        "A股 市场 政策 监管",
+        "人民币 汇率 外资 北向资金",
+        "中国 宏观经济 GDP 通胀 PMI",
+        "地产 政策 消费 出口 产业链",
+    ],
+    # Optional A-share / Chinese news integrations.
+    "tushare_token": os.getenv("TUSHARE_TOKEN"),
+    "tushare_adj": os.getenv("TUSHARE_ADJ", "qfq"),
+    "search_news_provider": os.getenv("SEARCH_NEWS_PROVIDER", "tavily"),
+    "search_news_api_key": os.getenv("SEARCH_NEWS_API_KEY"),
+    "search_news_endpoint": os.getenv("SEARCH_NEWS_ENDPOINT"),
+    "a_share_news_ttl_seconds": 6 * 60 * 60,
+    "a_share_market_ttl_seconds": 24 * 60 * 60,
+    "a_share_static_ttl_seconds": 30 * 24 * 60 * 60,
     # Data vendor configuration
     # Category-level configuration (default for all tools in category)
     "data_vendors": {
@@ -110,6 +142,9 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # while non-US tickers get their regional index automatically.
     "benchmark_ticker": None,
     "benchmark_map": {
+        ".SH":  "000300.SH", # China A-share default (CSI 300)
+        ".SZ":  "000300.SH", # China A-share default (CSI 300)
+        ".BJ":  "899050.BJ", # Beijing Stock Exchange 50
         ".NS":  "^NSEI",    # NSE India (Nifty 50)
         ".BO":  "^BSESN",   # BSE India (Sensex)
         ".T":   "^N225",    # Tokyo (Nikkei 225)

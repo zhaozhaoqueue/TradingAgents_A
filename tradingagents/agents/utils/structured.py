@@ -62,6 +62,8 @@ def invoke_structured_or_freetext(
     if structured_llm is not None:
         try:
             result = structured_llm.invoke(prompt)
+            if result is None:
+                raise ValueError("provider returned no structured object")
             return render(result)
         except Exception as exc:
             logger.warning(

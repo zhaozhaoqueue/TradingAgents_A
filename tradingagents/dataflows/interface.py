@@ -23,9 +23,41 @@ from .alpha_vantage import (
     get_global_news as get_alpha_vantage_global_news,
 )
 from .alpha_vantage_common import AlphaVantageRateLimitError
+from .exceptions import DataVendorUnavailable
+from .a_share_utils import is_a_share_symbol
+from .tushare_pro import (
+    get_stock as get_tushare_stock,
+    get_fundamentals as get_tushare_fundamentals,
+    get_balance_sheet as get_tushare_balance_sheet,
+    get_cashflow as get_tushare_cashflow,
+    get_income_statement as get_tushare_income_statement,
+)
+from .akshare_data import (
+    get_stock as get_akshare_stock,
+    get_news as get_akshare_news,
+    get_global_news as get_akshare_global_news,
+    get_insider_transactions as get_akshare_insider_transactions,
+)
+from .search_news import (
+    get_news as get_search_news,
+    get_global_news as get_search_global_news,
+    get_insider_transactions as get_search_insider_transactions,
+)
 
 # Configuration and routing logic
 from .config import get_config
+
+_CN_METHOD_VENDOR_DEFAULTS = {
+    "get_stock_data": "tushare_pro,akshare",
+    "get_indicators": "tushare_pro,akshare",
+    "get_fundamentals": "tushare_pro",
+    "get_balance_sheet": "tushare_pro",
+    "get_cashflow": "tushare_pro",
+    "get_income_statement": "tushare_pro",
+    "get_news": "search_news,akshare",
+    "get_global_news": "search_news,akshare",
+    "get_insider_transactions": "search_news,akshare",
+}
 
 # Tools organized by category
 TOOLS_CATEGORIES = {
@@ -63,12 +95,17 @@ TOOLS_CATEGORIES = {
 VENDOR_LIST = [
     "yfinance",
     "alpha_vantage",
+    "tushare_pro",
+    "akshare",
+    "search_news",
 ]
 
 # Mapping of methods to their vendor-specific implementations
 VENDOR_METHODS = {
     # core_stock_apis
     "get_stock_data": {
+        "tushare_pro": get_tushare_stock,
+        "akshare": get_akshare_stock,
         "alpha_vantage": get_alpha_vantage_stock,
         "yfinance": get_YFin_data_online,
     },
@@ -76,34 +113,46 @@ VENDOR_METHODS = {
     "get_indicators": {
         "alpha_vantage": get_alpha_vantage_indicator,
         "yfinance": get_stock_stats_indicators_window,
+        "tushare_pro": get_stock_stats_indicators_window,
+        "akshare": get_stock_stats_indicators_window,
     },
     # fundamental_data
     "get_fundamentals": {
+        "tushare_pro": get_tushare_fundamentals,
         "alpha_vantage": get_alpha_vantage_fundamentals,
         "yfinance": get_yfinance_fundamentals,
     },
     "get_balance_sheet": {
+        "tushare_pro": get_tushare_balance_sheet,
         "alpha_vantage": get_alpha_vantage_balance_sheet,
         "yfinance": get_yfinance_balance_sheet,
     },
     "get_cashflow": {
+        "tushare_pro": get_tushare_cashflow,
         "alpha_vantage": get_alpha_vantage_cashflow,
         "yfinance": get_yfinance_cashflow,
     },
     "get_income_statement": {
+        "tushare_pro": get_tushare_income_statement,
         "alpha_vantage": get_alpha_vantage_income_statement,
         "yfinance": get_yfinance_income_statement,
     },
     # news_data
     "get_news": {
+        "search_news": get_search_news,
+        "akshare": get_akshare_news,
         "alpha_vantage": get_alpha_vantage_news,
         "yfinance": get_news_yfinance,
     },
     "get_global_news": {
+        "search_news": get_search_global_news,
+        "akshare": get_akshare_global_news,
         "yfinance": get_global_news_yfinance,
         "alpha_vantage": get_alpha_vantage_global_news,
     },
     "get_insider_transactions": {
+        "search_news": get_search_insider_transactions,
+        "akshare": get_akshare_insider_transactions,
         "alpha_vantage": get_alpha_vantage_insider_transactions,
         "yfinance": get_yfinance_insider_transactions,
     },
@@ -134,18 +183,32 @@ def get_vendor(category: str, method: str = None) -> str:
 def route_to_vendor(method: str, *args, **kwargs):
     """Route method calls to appropriate vendor implementation with fallback support."""
     category = get_category_for_method(method)
-    vendor_config = get_vendor(category, method)
+    config = get_config()
+    first_arg = args[0] if args else None
+    cn_context = (
+        config.get("market_region") == "cn"
+        or (isinstance(first_arg, str) and is_a_share_symbol(first_arg))
+    )
+    vendor_config = (
+        _CN_METHOD_VENDOR_DEFAULTS.get(method)
+        if cn_context and method in _CN_METHOD_VENDOR_DEFAULTS
+        else get_vendor(category, method)
+    )
     primary_vendors = [v.strip() for v in vendor_config.split(',')]
 
     if method not in VENDOR_METHODS:
         raise ValueError(f"Method '{method}' not supported")
 
-    # Build fallback chain: primary vendors first, then remaining available vendors
+    # Build fallback chain: primary vendors first, then remaining available vendors.
+    # In A-share mode, do not fall through to US-centric providers such as
+    # yfinance/Alpha Vantage; their "No data found" responses confuse agents
+    # and mask the real CN-source failure.
     all_available_vendors = list(VENDOR_METHODS[method].keys())
     fallback_vendors = primary_vendors.copy()
-    for vendor in all_available_vendors:
-        if vendor not in fallback_vendors:
-            fallback_vendors.append(vendor)
+    if not cn_context:
+        for vendor in all_available_vendors:
+            if vendor not in fallback_vendors:
+                fallback_vendors.append(vendor)
 
     for vendor in fallback_vendors:
         if vendor not in VENDOR_METHODS[method]:
@@ -156,7 +219,7 @@ def route_to_vendor(method: str, *args, **kwargs):
 
         try:
             return impl_func(*args, **kwargs)
-        except AlphaVantageRateLimitError:
-            continue  # Only rate limits trigger fallback
+        except (AlphaVantageRateLimitError, DataVendorUnavailable, ValueError):
+            continue  # Rate limits / unavailable optional vendors trigger fallback
 
     raise RuntimeError(f"No available vendor for '{method}'")

@@ -141,6 +141,10 @@ def get_stock_stats_indicators_window(
     # Optimized: Get stock data once and calculate indicators for all dates
     try:
         indicator_data = _get_stock_stats_bulk(symbol, indicator, curr_date)
+        latest_trading_date = max(
+            (d for d, v in indicator_data.items() if not str(v).startswith("N/A")),
+            default=None,
+        )
         
         # Generate the date range we need
         current_dt = curr_date_dt
@@ -174,9 +178,16 @@ def get_stock_stats_indicators_window(
             )
             ind_string += f"{curr_date_dt.strftime('%Y-%m-%d')}: {indicator_value}\n"
             curr_date_dt = curr_date_dt - relativedelta(days=1)
+        latest_trading_date = None
 
     result_str = (
         f"## {indicator} values from {before.strftime('%Y-%m-%d')} to {end_date}:\n\n"
+        + f"Requested analysis date: {end_date}\n"
+        + (
+            f"Latest available trading date at or before requested date: {latest_trading_date}\n\n"
+            if latest_trading_date
+            else "\n"
+        )
         + ind_string
         + "\n\n"
         + best_ind_params.get(indicator, "No description available.")

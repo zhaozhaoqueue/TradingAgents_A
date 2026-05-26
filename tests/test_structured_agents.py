@@ -230,3 +230,13 @@ class TestResearchManagerAgent:
         rm = create_research_manager(llm)
         result = rm(_make_rm_state())
         assert result["investment_plan"] == plain_response
+
+    def test_falls_back_to_freetext_when_structured_returns_none(self):
+        plain_response = "**Recommendation**: Hold\n\n**Rationale**: fallback"
+        llm = _structured_rm_llm({})
+        llm.with_structured_output.return_value.invoke.side_effect = None
+        llm.with_structured_output.return_value.invoke.return_value = None
+        llm.invoke.return_value = MagicMock(content=plain_response)
+        rm = create_research_manager(llm)
+        result = rm(_make_rm_state())
+        assert result["investment_plan"] == plain_response

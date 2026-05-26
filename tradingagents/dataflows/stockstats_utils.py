@@ -9,6 +9,7 @@ from typing import Annotated
 import os
 from .config import get_config
 from .utils import safe_ticker_component
+from .a_share_utils import is_a_share_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,23 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
 
     config = get_config()
     curr_date_dt = pd.to_datetime(curr_date)
+    vendor_pref = config.get("data_vendors", {}).get("technical_indicators", "")
+    if config.get("market_region") == "cn" or is_a_share_symbol(symbol):
+        end_str = curr_date_dt.strftime("%Y-%m-%d")
+        start_str = (curr_date_dt - pd.DateOffset(years=5)).strftime("%Y-%m-%d")
+        for vendor in [v.strip() for v in vendor_pref.split(",") if v.strip()] + ["tushare_pro", "akshare"]:
+            try:
+                if vendor == "tushare_pro":
+                    from .tushare_pro import get_ohlcv_dataframe
+                elif vendor == "akshare":
+                    from .akshare_data import get_ohlcv_dataframe
+                else:
+                    continue
+                data = get_ohlcv_dataframe(symbol, start_str, end_str)
+                data = _clean_dataframe(data)
+                return data[data["Date"] <= curr_date_dt]
+            except Exception:
+                continue
 
     # Cache uses a fixed window (15y to today) so one file per symbol
     today_date = pd.Timestamp.today()
