@@ -6,6 +6,7 @@ from .a_share_utils import normalize_a_share_symbol, to_akshare_symbol
 from .cache import read_dataframe, write_dataframe
 from .config import get_config
 from .exceptions import DataVendorUnavailable
+from .news_quality import filter_news_rows
 
 
 def _akshare():
@@ -206,7 +207,8 @@ def get_global_news(curr_date: str, look_back_days: int = 7, limit: int = 20) ->
     try:
         df = ak.stock_news_main_cx()
         if df is not None and not df.empty:
-            df = df.head(limit).copy()
+            rows = filter_news_rows(df.to_dict("records"), limit=limit)
+            df = pd.DataFrame(rows if rows else df.head(limit).to_dict("records")).copy()
             df["source"] = "Caixin/AkShare"
             write_dataframe(
                 df,
@@ -239,7 +241,8 @@ def get_global_news(curr_date: str, look_back_days: int = 7, limit: int = 20) ->
 
     if not rows:
         raise DataVendorUnavailable("No AkShare global news found")
-    out = pd.DataFrame(rows[:limit])
+    filtered = filter_news_rows(rows, limit=limit)
+    out = pd.DataFrame(filtered if filtered else rows[:limit])
     write_dataframe(
         out,
         "akshare",
@@ -257,6 +260,7 @@ def _format_global_news(rows: list[dict], curr_date: str, limit: int) -> str:
     if not rows:
         return f"No global news found for {curr_date}"
     lines = [f"## China Market News up to {curr_date} (AkShare)", ""]
+    rows = filter_news_rows(rows, limit=limit) or rows[:limit]
     for row in rows[:limit]:
         title = row.get("title") or row.get("标题") or row.get("新闻标题") or row.get("tag") or "No title"
         content = row.get("summary") or row.get("content") or row.get("新闻内容") or row.get("内容") or ""

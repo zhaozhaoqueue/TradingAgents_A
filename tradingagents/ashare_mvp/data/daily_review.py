@@ -183,10 +183,16 @@ class AShareDailyReviewFetcher:
         counts: dict[str, dict] = {}
         for mover in top_by_amount:
             industry = mover.industry or "未知行业"
-            bucket = counts.setdefault(industry, {"name": industry, "count": 0, "symbols": []})
+            bucket = counts.setdefault(industry, {"name": industry, "count": 0, "symbols": [], "_pct_values": []})
             bucket["count"] += 1
             bucket["symbols"].append(mover.symbol)
+            if mover.pct_change is not None:
+                bucket["_pct_values"].append(mover.pct_change)
         ranked = sorted(counts.values(), key=lambda item: item["count"], reverse=True)
+        for item in ranked:
+            values = item.pop("_pct_values", [])
+            item["pct_change"] = sum(values) / len(values) if values else None
+            item["source"] = "top_by_amount_industry_cluster"
         return ranked[:top_n_sectors]
 
     def _annotate_movers(self, movers: list[DailyMover], amount_leaders: list[DailyMover], hot_sectors: list[dict]) -> None:

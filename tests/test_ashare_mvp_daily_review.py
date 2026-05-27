@@ -115,3 +115,23 @@ class DailyReviewPipelineTests(unittest.TestCase):
 
         self.assertEqual(result[0]["name"], "机器人")
         self.assertEqual(result[0]["symbols"], ["300001.SZ"])
+
+    def test_hot_sector_fallback_estimates_pct_change_from_amount_leaders(self):
+        class _FailingBoardFetcher:
+            def fetch_hot_industry_boards(self, top_n: int = 5):
+                raise RuntimeError("board unavailable")
+
+        fetcher = AShareDailyReviewFetcher(board_fetcher=_FailingBoardFetcher())
+        result = fetcher._build_hot_sectors(
+            top_by_amount=[
+                DailyMover(symbol="300001.SZ", industry="机器人", pct_change=4.0),
+                DailyMover(symbol="300010.SZ", industry="机器人", pct_change=2.0),
+                DailyMover(symbol="600010.SH", industry="算力", pct_change=-1.0),
+            ],
+            top_n_sectors=2,
+            notes=[],
+        )
+
+        self.assertEqual(result[0]["name"], "机器人")
+        self.assertEqual(result[0]["pct_change"], 3.0)
+        self.assertEqual(result[0]["source"], "top_by_amount_industry_cluster")

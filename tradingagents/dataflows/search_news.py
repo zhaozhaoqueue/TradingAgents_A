@@ -7,6 +7,7 @@ from .a_share_utils import default_search_aliases, is_a_share_symbol, normalize_
 from .cache import read_jsonl, write_jsonl
 from .config import get_config
 from .exceptions import DataVendorUnavailable
+from .news_quality import filter_news_rows
 
 
 def _api_key() -> str:
@@ -136,7 +137,7 @@ def get_news(ticker: str, start_date: str, end_date: str) -> str:
     rows = []
     for query in _queries_for_ticker(ticker):
         rows.extend(_search(query, limit=5))
-    rows = _dedupe(rows)[: get_config()["news_article_limit"]]
+    rows = filter_news_rows(_dedupe(rows), limit=get_config()["news_article_limit"])
     write_jsonl(
         rows,
         "search_news",
@@ -165,7 +166,7 @@ def get_global_news(curr_date: str, look_back_days: int = None, limit: int = Non
         rows.extend(_search(query, limit=4))
         if len(rows) >= limit:
             break
-    rows = _dedupe(rows)[:limit]
+    rows = filter_news_rows(_dedupe(rows), limit=limit)
     write_jsonl(
         rows,
         "search_news",
@@ -180,4 +181,3 @@ def get_global_news(curr_date: str, look_back_days: int = None, limit: int = Non
 
 def get_insider_transactions(symbol: str) -> str:
     raise DataVendorUnavailable("Search news does not provide insider transactions")
-

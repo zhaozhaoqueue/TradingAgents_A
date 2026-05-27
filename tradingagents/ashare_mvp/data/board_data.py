@@ -24,14 +24,14 @@ class AShareBoardDataFetcher:
 
     def fetch_hot_industry_boards(self, top_n: int = 5) -> list[IndustryBoardSnapshot]:
         ak = self._ak()
-        df = ak.stock_board_industry_name_em()
+        df = self._industry_board_table(ak)
         if df is None or df.empty:
             return []
 
         name_col = _pick_column(df, ("板块名称", "名称"))
         change_col = _pick_column(df, ("涨跌幅",))
         code_col = _pick_column(df, ("板块代码", "代码"))
-        turnover_col = _pick_column(df, ("总市值", "成交额", "成交总额"))
+        turnover_col = _pick_optional_column(df, ("总市值", "成交额", "成交总额"))
 
         work = df.copy()
         work["_pct_change"] = pd.to_numeric(work[change_col], errors="coerce")
@@ -39,13 +39,14 @@ class AShareBoardDataFetcher:
 
         boards: list[IndustryBoardSnapshot] = []
         for row in work.to_dict("records"):
+            name = str(row.get(name_col) or "").strip()
             boards.append(
                 IndustryBoardSnapshot(
-                    name=str(row.get(name_col) or "").strip(),
+                    name=name,
                     pct_change=_safe_float(row.get(change_col)),
                     board_code=str(row.get(code_col)).strip() if code_col and row.get(code_col) is not None else None,
                     turnover=_safe_float(row.get(turnover_col)) if turnover_col else None,
-                    top_constituents=[],
+                    top_constituents=self._fetch_constituents(ak, name, top_n_constituents=5),
                 )
             )
         return boards
@@ -54,12 +55,13 @@ class AShareBoardDataFetcher:
         if not industry_name:
             return None
         ak = self._ak()
+        matched_name = self._resolve_industry_name(ak, industry_name) or industry_name
         pct_change = None
-        constituents: list[dict[str, Any]] = []
+        constituents: list[dict[str, Any]] = self._fetch_constituents(ak, matched_name, top_n_constituents)
 
         try:
             hist = ak.stock_board_industry_hist_em(
-                symbol=industry_name,
+                symbol=matched_name,
                 start_date=(datetime.strptime(trade_date, "%Y-%m-%d") - timedelta(days=20)).strftime("%Y%m%d"),
                 end_date=trade_date.replace("-", ""),
                 period="日k",
@@ -80,34 +82,69 @@ class AShareBoardDataFetcher:
         except Exception:
             pct_change = None
 
-        try:
-            cons = ak.stock_board_industry_cons_em(symbol=industry_name)
-            if cons is not None and not cons.empty:
-                name_col = _pick_optional_column(cons, ("名称",))
-                symbol_col = _pick_optional_column(cons, ("代码",))
-                change_col = _pick_optional_column(cons, ("涨跌幅",))
-                latest_col = _pick_optional_column(cons, ("最新价",))
-                cons = cons.copy()
-                if change_col:
-                    cons["_pct_change"] = pd.to_numeric(cons[change_col], errors="coerce")
-                    cons = cons.sort_values("_pct_change", ascending=False)
-                for row in cons.head(top_n_constituents).to_dict("records"):
-                    constituents.append(
-                        {
-                            "symbol": str(row.get(symbol_col) or "").strip() if symbol_col else None,
-                            "name": str(row.get(name_col) or "").strip() if name_col else None,
-                            "pct_change": _safe_float(row.get(change_col)) if change_col else None,
-                            "latest_price": _safe_float(row.get(latest_col)) if latest_col else None,
-                        }
-                    )
-        except Exception:
-            constituents = []
-
         return IndustryBoardSnapshot(
-            name=industry_name,
+            name=matched_name,
             pct_change=pct_change,
             top_constituents=constituents,
         )
+
+    def _industry_board_table(self, ak) -> pd.DataFrame:
+        df = ak.stock_board_industry_name_em()
+        if df is None:
+            return pd.DataFrame()
+        return df
+
+    def _resolve_industry_name(self, ak, industry_name: str) -> str | None:
+        try:
+            df = self._industry_board_table(ak)
+        except Exception:
+            return None
+        if df is None or df.empty:
+            return None
+        name_col = _pick_optional_column(df, ("板块名称", "名称"))
+        if not name_col:
+            return None
+        names = [str(value).strip() for value in df[name_col].dropna().tolist()]
+        if industry_name in names:
+            return industry_name
+        compact = _compact_name(industry_name)
+        for name in names:
+            if _compact_name(name) == compact:
+                return name
+        for name in names:
+            left = _compact_name(name)
+            if compact and (compact in left or left in compact):
+                return name
+        return None
+
+    def _fetch_constituents(self, ak, industry_name: str, top_n_constituents: int) -> list[dict[str, Any]]:
+        constituents: list[dict[str, Any]] = []
+        if not industry_name:
+            return constituents
+        try:
+            cons = ak.stock_board_industry_cons_em(symbol=industry_name)
+        except Exception:
+            return constituents
+        if cons is None or cons.empty:
+            return constituents
+        name_col = _pick_optional_column(cons, ("名称",))
+        symbol_col = _pick_optional_column(cons, ("代码",))
+        change_col = _pick_optional_column(cons, ("涨跌幅",))
+        latest_col = _pick_optional_column(cons, ("最新价",))
+        cons = cons.copy()
+        if change_col:
+            cons["_pct_change"] = pd.to_numeric(cons[change_col], errors="coerce")
+            cons = cons.sort_values("_pct_change", ascending=False)
+        for row in cons.head(top_n_constituents).to_dict("records"):
+            constituents.append(
+                {
+                    "symbol": _to_ts_code(str(row.get(symbol_col) or "").strip()) if symbol_col else None,
+                    "name": str(row.get(name_col) or "").strip() if name_col else None,
+                    "pct_change": _safe_float(row.get(change_col)) if change_col else None,
+                    "latest_price": _safe_float(row.get(latest_col)) if latest_col else None,
+                }
+            )
+        return constituents
 
     def _ak(self):
         if self._ak_client is not None:
@@ -138,3 +175,19 @@ def _safe_float(value) -> float | None:
         return float(value)
     except Exception:
         return None
+
+
+def _compact_name(value: str) -> str:
+    return str(value).replace("行业", "").replace("板块", "").replace("Ⅱ", "").replace("I", "").strip()
+
+
+def _to_ts_code(symbol: str) -> str:
+    if "." in symbol:
+        return symbol
+    if symbol.startswith(("6", "9")):
+        return f"{symbol}.SH"
+    if symbol.startswith(("0", "2", "3")):
+        return f"{symbol}.SZ"
+    if symbol.startswith(("4", "8")):
+        return f"{symbol}.BJ"
+    return symbol

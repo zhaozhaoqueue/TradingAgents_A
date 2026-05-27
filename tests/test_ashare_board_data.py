@@ -45,6 +45,7 @@ class BoardDataFetcherTests(unittest.TestCase):
         self.assertEqual(len(boards), 2)
         self.assertEqual(boards[0].name, "机器人")
         self.assertGreater(boards[0].pct_change, boards[1].pct_change)
+        self.assertEqual(boards[0].top_constituents[0]["symbol"], "300001.SZ")
 
     def test_fetch_industry_snapshot(self):
         fetcher = AShareBoardDataFetcher(ak_client=_FakeAk())
@@ -54,4 +55,13 @@ class BoardDataFetcherTests(unittest.TestCase):
         self.assertIsNotNone(board)
         self.assertEqual(board.name, "机器人")
         self.assertEqual(board.pct_change, 2.8)
-        self.assertEqual(board.top_constituents[0]["symbol"], "300001")
+        self.assertEqual(board.top_constituents[0]["symbol"], "300001.SZ")
+
+    def test_fetch_industry_snapshot_resolves_close_board_name(self):
+        fetcher = AShareBoardDataFetcher(ak_client=_FakeAk())
+
+        board = fetcher.fetch_industry_snapshot("机器人行业", "2026-05-27")
+
+        self.assertIsNotNone(board)
+        self.assertEqual(board.name, "机器人")
+        self.assertEqual(board.top_constituents[0]["symbol"], "300001.SZ")
