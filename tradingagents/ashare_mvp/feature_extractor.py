@@ -26,6 +26,7 @@ class FeatureExtractor:
         prev_close = _safe_float(history.iloc[-2]["Close"]) if len(history) >= 2 else None
         amount = _safe_float(latest.get("Amount"))
         volume = _safe_float(latest.get("Volume"))
+        turnover_rate = _safe_float(latest.get("TurnoverRate"))
 
         history["close_5ma"] = history["Close"].rolling(5, min_periods=3).mean()
         history["close_10ma"] = history["Close"].rolling(10, min_periods=5).mean()
@@ -41,7 +42,7 @@ class FeatureExtractor:
         features.close = close
         features.amount = amount
         features.volume = volume
-        features.turnover_rate = None
+        features.turnover_rate = turnover_rate
         features.close_5ma = _safe_float(latest_ma.get("close_5ma"))
         features.close_10ma = _safe_float(latest_ma.get("close_10ma"))
         features.close_20ma = _safe_float(latest_ma.get("close_20ma"))
@@ -74,6 +75,8 @@ class FeatureExtractor:
             features.notes.append("近 20 日样本不足，技术位置判断有限。")
         if amount is None:
             features.notes.append("成交额暂缺。")
+        if turnover_rate is None:
+            features.notes.append("换手率暂缺。")
 
         return features
 

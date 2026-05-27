@@ -135,7 +135,7 @@ class DailyReviewPipeline:
         reasons: list[str] = []
         if mover.pct_change is not None:
             if bucket_name == "gainer" and mover.pct_change >= 7:
-                reasons.append("涨幅较大，短线资金关注度明显升温")
+                reasons.append("涨幅较大，当日资金关注度明显提升")
             elif bucket_name == "loser" and mover.pct_change <= -5:
                 reasons.append("跌幅较深，盘中承压明显")
         if mover.is_amount_leader:
@@ -162,16 +162,16 @@ class DailyReviewPipeline:
     def _build_risk(self, mover: DailyMover, bucket_name: str) -> str:
         risks: list[str] = []
         if bucket_name == "gainer":
-            risks.append("需警惕高位放量后的波动放大")
+            risks.append("大幅波动后，次日分歧可能上升")
         elif bucket_name == "loser":
-            risks.append("若无新增公开信息，需警惕情绪性下跌延续")
+            risks.append("若无新增公开信息，仍需观察波动是否继续放大")
         else:
             risks.append("高成交额不等于趋势已确认")
 
         if mover.industry_pct_change is None:
             risks.append("行业板块数据不足，联动判断需保守")
         if mover.pct_change is not None and abs(mover.pct_change) >= 9:
-            risks.append("单日波动较大，次日分歧可能上升")
+            risks.append("单日波动较大，需结合公告和成交结构复核")
         return "；".join(dict.fromkeys(risks))
 
     def _match_news_keyword(self, mover: DailyMover, news_titles: list[str]) -> str | None:

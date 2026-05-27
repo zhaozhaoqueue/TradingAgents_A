@@ -30,6 +30,7 @@ class AShareStockMoveFetcher:
         history = self._fetch_history(ts_code, start_date, end_date)
         if history.empty:
             raise RuntimeError(f"No A-share history data available for {ts_code} on or before {trade_date}")
+        history = self._enrich_daily_basic(ts_code, history, start_date, end_date)
 
         latest_row = history.sort_values("Date").iloc[-1].to_dict()
         profile = self._fetch_profile(ts_code)
@@ -55,6 +56,39 @@ class AShareStockMoveFetcher:
             except Exception as exc:  # pragma: no cover - best-effort fallback
                 errors.append(str(exc))
         raise RuntimeError("; ".join(errors))
+
+    def _enrich_daily_basic(self, symbol: str, history: pd.DataFrame, start_date: str, end_date: str) -> pd.DataFrame:
+        if history.empty or "TurnoverRate" in history.columns:
+            return history
+        try:
+            pro = tushare_pro_client()
+            daily_basic = pro.daily_basic(
+                ts_code=symbol,
+                start_date=start_date.replace("-", ""),
+                end_date=end_date.replace("-", ""),
+                fields="ts_code,trade_date,turnover_rate,volume_ratio",
+            )
+        except Exception:
+            return history
+        if daily_basic is None or daily_basic.empty:
+            return history
+
+        metrics = daily_basic.rename(
+            columns={
+                "trade_date": "Date",
+                "turnover_rate": "TurnoverRate",
+                "volume_ratio": "VolumeRatio",
+            }
+        ).copy()
+        keep = [col for col in ["Date", "TurnoverRate", "VolumeRatio"] if col in metrics.columns]
+        if "Date" not in keep:
+            return history
+        metrics = metrics[keep]
+        metrics["Date"] = pd.to_datetime(metrics["Date"].astype(str), format="%Y%m%d", errors="coerce")
+        for col in ["TurnoverRate", "VolumeRatio"]:
+            if col in metrics:
+                metrics[col] = pd.to_numeric(metrics[col], errors="coerce")
+        return history.merge(metrics.dropna(subset=["Date"]), on="Date", how="left")
 
     def _fetch_profile(self, symbol: str) -> StockProfile:
         try:

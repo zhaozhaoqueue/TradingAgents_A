@@ -83,9 +83,14 @@ class DailyReviewPipelineTests(unittest.TestCase):
         report = pipeline.run(DailyReviewInput(trade_date="2026-05-27"))
 
         self.assertIn("# A 股盘后复盘：2026-05-27", report.markdown)
-        self.assertIn("## 2. 今日热点板块", report.markdown)
+        self.assertIn("## 2. 今天哪些方向更活跃？", report.markdown)
+        self.assertIn("## 3. 哪些个股需要复盘？", report.markdown)
+        self.assertIn("| 股票 | 涨跌幅 | 所属板块 | 观察线索 | 需要注意 |", report.markdown)
+        self.assertIn("## 5. 明天重点观察什么？", report.markdown)
+        self.assertIn("## 6. 输出边界", report.markdown)
         self.assertIn("机器人", report.markdown)
         self.assertIn("所属行业板块同步走强", report.markdown)
+        self.assertNotIn("偏偏强", report.markdown)
 
     def test_pipeline_enriches_mover_reason_and_risk(self):
         pipeline = DailyReviewPipeline(fetcher=_FakeDailyFetcher(), llm=None)
@@ -95,7 +100,7 @@ class DailyReviewPipelineTests(unittest.TestCase):
         top_gainer = report.dataset.top_gainers[0]
         self.assertIn("成交额活跃", top_gainer.reason)
         self.assertIn("机器人", top_gainer.reason)
-        self.assertIn("高位", top_gainer.risk)
+        self.assertIn("分歧可能上升", top_gainer.risk)
 
     def test_real_fetcher_hot_sectors_prefers_board_data(self):
         fetcher = AShareDailyReviewFetcher(board_fetcher=_FakeBoardFetcher())

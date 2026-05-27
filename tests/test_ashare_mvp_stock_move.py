@@ -11,12 +11,18 @@ import tradingagents.default_config as default_config
 from tradingagents.ashare_mvp.data.board_data import IndustryBoardSnapshot
 from tradingagents.ashare_mvp.data.stock_move import AShareStockMoveFetcher
 from tradingagents.ashare_mvp.feature_extractor import FeatureExtractor
+from tradingagents.ashare_mvp.analysis import _parse_analysis
 from tradingagents.ashare_mvp.pipeline.stock_move_pipeline import StockMovePipeline
+from tradingagents.ashare_mvp.renderers import render_stock_move_report
+from tradingagents.dataflows.akshare_data import _normalize_hist
 from tradingagents.ashare_mvp.schemas import (
     SectorSnapshot,
+    StockMoveAnalysis,
     StockMoveDataset,
+    StockMoveFeatures,
     StockMoveInput,
     StockProfile,
+    StockMoveReport,
 )
 from tradingagents.dataflows.config import set_config
 
@@ -30,7 +36,16 @@ class _FakeFetcher:
                 {"Date": "2026-05-22", "Open": 10.2, "High": 10.5, "Low": 10.1, "Close": 10.3, "Volume": 1300, "Amount": 13000},
                 {"Date": "2026-05-23", "Open": 10.4, "High": 10.7, "Low": 10.3, "Close": 10.5, "Volume": 1500, "Amount": 15000},
                 {"Date": "2026-05-26", "Open": 10.6, "High": 11.0, "Low": 10.5, "Close": 10.9, "Volume": 2600, "Amount": 26000},
-                {"Date": "2026-05-27", "Open": 11.0, "High": 11.6, "Low": 10.9, "Close": 11.5, "Volume": 4200, "Amount": 42000},
+                {
+                    "Date": "2026-05-27",
+                    "Open": 11.0,
+                    "High": 11.6,
+                    "Low": 10.9,
+                    "Close": 11.5,
+                    "Volume": 4200,
+                    "Amount": 42000,
+                    "TurnoverRate": 3.21,
+                },
             ]
         )
         history["Date"] = pd.to_datetime(history["Date"])
@@ -62,6 +77,16 @@ class _FakeBoardFetcher:
         )
 
 
+class _FakeProClient:
+    def daily_basic(self, **kwargs):
+        return pd.DataFrame(
+            [
+                {"ts_code": "600000.SH", "trade_date": "20260526", "turnover_rate": 2.1, "volume_ratio": 1.2},
+                {"ts_code": "600000.SH", "trade_date": "20260527", "turnover_rate": 3.4, "volume_ratio": 1.5},
+            ]
+        )
+
+
 @pytest.mark.unit
 class FeatureExtractorTests(unittest.TestCase):
     def test_extract_identifies_price_and_volume_move(self):
@@ -70,7 +95,28 @@ class FeatureExtractorTests(unittest.TestCase):
 
         self.assertGreater(features.pct_change, 5)
         self.assertGreater(features.volume_ratio_vs_20d, 1.5)
+        self.assertEqual(features.turnover_rate, 3.21)
         self.assertIn("price_move", features.flags)
+
+    def test_akshare_history_preserves_turnover_rate(self):
+        df = pd.DataFrame(
+            [
+                {
+                    "日期": "2026-05-27",
+                    "开盘": 10,
+                    "最高": 11,
+                    "最低": 9,
+                    "收盘": 10.5,
+                    "成交量": 1000,
+                    "成交额": 2000,
+                    "换手率": 4.56,
+                }
+            ]
+        )
+
+        normalized = _normalize_hist(df)
+
+        self.assertEqual(normalized.iloc[0]["TurnoverRate"], 4.56)
 
 
 @pytest.mark.unit
@@ -87,12 +133,95 @@ class StockMovePipelineTests(unittest.TestCase):
 
         self.assertEqual(report.profile.name, "测试股份")
         self.assertIn("# 测试股份（600000.SH）今日异动解读", report.markdown)
-        self.assertIn("## 6. 社群短版", report.markdown)
+        self.assertIn("## 2. 今天为什么这样走？", report.markdown)
+        self.assertIn("### 2.1 先看盘面：有没有明显异常？", report.markdown)
+        self.assertIn("### 2.4 最后判断：这个解释有多可靠？", report.markdown)
+        self.assertIn("## 6. 后续怎么观察？", report.markdown)
+        self.assertIn("### 6.2 接下来重点看什么？", report.markdown)
+        self.assertIn("## 7. 社群短版", report.markdown)
         self.assertNotIn("买入", report.markdown)
+
+    def test_parse_analysis_keeps_string_evidence_as_one_item(self):
+        analysis = _parse_analysis('{"summary":"ok","evidence":"三条新闻均未直接提及个股"}', "fallback")
+
+        self.assertEqual(analysis.evidence, ["三条新闻均未直接提及个股"])
+
+    def test_parse_analysis_accepts_fenced_json(self):
+        analysis = _parse_analysis(
+            '```json\n{"summary":"ok","evidence":{"weak":["行业新闻未点名个股"]}}\n```',
+            "fallback",
+        )
+
+        self.assertEqual(analysis.summary, "ok")
+        self.assertEqual(analysis.evidence, ["weak: 行业新闻未点名个股"])
+
+    def test_render_filters_internal_compliance_notes(self):
+        report = StockMoveReport(
+            input=StockMoveInput(symbol="600000.SH", trade_date="2026-05-27"),
+            profile=StockProfile(symbol="600000.SH", name="测试股份", industry="新能源"),
+            sector_snapshot=SectorSnapshot(industry="新能源"),
+            features=StockMoveFeatures(pct_change=0.8, volume_ratio_vs_20d=0.9),
+            market_analysis=StockMoveAnalysis(summary="盘面波动较弱。", bullets=["盘面波动较弱。"], evidence=[]),
+            news_analysis=StockMoveAnalysis(
+                summary="新闻未形成直接催化。",
+                bullets=["测试股份相关消息未直接提及明确订单。"],
+                evidence=["三条新闻均未直接提及个股"],
+            ),
+            sector_analysis=StockMoveAnalysis(summary="板块证据不足。", bullets=["板块数据暂缺，需复核。"], evidence=[]),
+            compliance_notes=[
+                "evidence 占位符显示编辑器未按照规范填充，存在合规审查漏洞。",
+                "将行业信息直接外推到个股，可能带来误读风险。",
+            ],
+            markdown="",
+        )
+
+        markdown = render_stock_move_report(report)
+
+        self.assertIn("# 测试股份（600000.SH）今日观察简报", markdown)
+        self.assertIn("- 三条新闻均未直接提及个股", markdown)
+        self.assertNotIn("\n- 三\n- 条\n- 新\n- 闻", markdown)
+        self.assertNotIn("占位符", markdown)
+        self.assertIn("可能带来误读风险", markdown)
+
+    def test_observation_does_not_treat_negated_news_as_direct_evidence(self):
+        report = StockMoveReport(
+            input=StockMoveInput(symbol="600326.SH", trade_date="2026-05-26"),
+            profile=StockProfile(symbol="600326.SH", name="西藏天路", industry="水泥"),
+            sector_snapshot=SectorSnapshot(industry="水泥"),
+            features=StockMoveFeatures(pct_change=-0.8, volume_ratio_vs_20d=0.7),
+            market_analysis=StockMoveAnalysis(summary="小幅缩量。", bullets=["小幅缩量。"], evidence=[]),
+            news_analysis=StockMoveAnalysis(
+                summary="西藏天路未出现直接相关新闻。",
+                bullets=[],
+                evidence=["西藏天路未出现直接相关的公司新闻，仅有行业背景线索。"],
+            ),
+            sector_analysis=StockMoveAnalysis(summary="板块数据不足。", bullets=[], evidence=[]),
+            compliance_notes=[],
+            markdown="",
+        )
+
+        markdown = render_stock_move_report(report)
+
+        self.assertIn("目前更多是行业或背景线索", markdown)
+        self.assertNotIn("已经有个股相关公开信息", markdown)
 
 
 @pytest.mark.unit
 class StockMoveFetcherBoardTests(unittest.TestCase):
+    def test_enrich_daily_basic_merges_turnover_rate(self):
+        fetcher = AShareStockMoveFetcher()
+        history = pd.DataFrame(
+            [
+                {"Date": pd.Timestamp("2026-05-26"), "Close": 10.0},
+                {"Date": pd.Timestamp("2026-05-27"), "Close": 10.5},
+            ]
+        )
+
+        with unittest.mock.patch("tradingagents.ashare_mvp.data.stock_move.tushare_pro_client", return_value=_FakeProClient()):
+            enriched = fetcher._enrich_daily_basic("600000.SH", history, "2026-05-26", "2026-05-27")
+
+        self.assertEqual(enriched.iloc[-1]["TurnoverRate"], 3.4)
+
     def test_sector_snapshot_includes_board_data(self):
         fetcher = AShareStockMoveFetcher(board_fetcher=_FakeBoardFetcher())
 

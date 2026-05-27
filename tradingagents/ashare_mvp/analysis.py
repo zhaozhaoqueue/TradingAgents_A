@@ -34,15 +34,68 @@ def build_default_llm():
 
 def _parse_analysis(content: str, fallback_summary: str) -> StockMoveAnalysis:
     try:
-        payload = json.loads(content)
+        payload = _load_json_object(content)
         return StockMoveAnalysis(
             summary=payload.get("summary") or fallback_summary,
-            bullets=[str(x) for x in payload.get("bullets", [])][:5],
-            evidence=[str(x) for x in payload.get("evidence", [])][:5],
-            risks=[str(x) for x in payload.get("risks", [])][:5],
+            bullets=_string_list(payload.get("bullets"))[:5],
+            evidence=_string_list(payload.get("evidence"))[:5],
+            risks=_string_list(payload.get("risks"))[:5],
         )
     except Exception:
         return StockMoveAnalysis(summary=str(content).strip() or fallback_summary)
+
+
+def _load_json_object(content: str) -> dict:
+    text = str(content).strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        decoder = json.JSONDecoder()
+        start = text.find("{")
+        while start != -1:
+            try:
+                payload, _ = decoder.raw_decode(text[start:])
+                break
+            except json.JSONDecodeError:
+                start = text.find("{", start + 1)
+        else:
+            raise
+    if not isinstance(payload, dict):
+        raise ValueError("analysis JSON must be an object")
+    return payload
+
+
+def _string_list(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, list):
+        return [_stringify_item(item) for item in value if _stringify_item(item)]
+    return [_stringify_item(value)]
+
+
+def _stringify_item(value) -> str:
+    if isinstance(value, dict):
+        parts = [f"{key}: {_stringify_nested(item)}" for key, item in value.items() if _stringify_nested(item)]
+        return "；".join(parts).strip()
+    return str(value).strip()
+
+
+def _stringify_nested(value) -> str:
+    if isinstance(value, list):
+        return "、".join(str(item).strip() for item in value if str(item).strip())
+    if isinstance(value, dict):
+        return "；".join(f"{key}: {_stringify_nested(item)}" for key, item in value.items() if _stringify_nested(item))
+    return str(value).strip()
 
 
 def market_prompt(dataset: StockMoveDataset, features: StockMoveFeatures) -> str:

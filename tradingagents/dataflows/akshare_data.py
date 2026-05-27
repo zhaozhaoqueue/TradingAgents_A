@@ -27,12 +27,13 @@ def _normalize_hist(df: pd.DataFrame) -> pd.DataFrame:
         "收盘": "Close",
         "成交量": "Volume",
         "成交额": "Amount",
+        "换手率": "TurnoverRate",
     }
     out = df.rename(columns=rename).copy()
-    keep = [c for c in ["Date", "Open", "High", "Low", "Close", "Volume", "Amount"] if c in out]
+    keep = [c for c in ["Date", "Open", "High", "Low", "Close", "Volume", "Amount", "TurnoverRate"] if c in out]
     out = out[keep]
     out["Date"] = pd.to_datetime(out["Date"], errors="coerce")
-    for col in ["Open", "High", "Low", "Close", "Volume", "Amount"]:
+    for col in ["Open", "High", "Low", "Close", "Volume", "Amount", "TurnoverRate"]:
         if col in out:
             out[col] = pd.to_numeric(out[col], errors="coerce")
     return out.dropna(subset=["Date", "Close"]).sort_values("Date").reset_index(drop=True)
