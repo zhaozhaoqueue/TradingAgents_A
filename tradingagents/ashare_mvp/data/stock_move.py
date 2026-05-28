@@ -11,7 +11,7 @@ from tradingagents.dataflows.interface import route_to_vendor
 from tradingagents.dataflows.tushare_pro import get_ohlcv_dataframe as get_tushare_ohlcv
 from tradingagents.dataflows.tushare_pro import _pro as tushare_pro_client
 
-from .board_data import AShareBoardDataFetcher
+from .board_data import AShareBoardDataFetcher, ConceptBoardSnapshot
 from ..schemas import SectorSnapshot, StockMoveDataset, StockProfile
 
 
@@ -122,12 +122,16 @@ class AShareStockMoveFetcher:
         notes = []
         if not profile.industry:
             notes.append("行业信息暂缺，板块联动判断可信度较低。")
+            concept_boards = self._fetch_concept_boards(profile.symbol, trade_date, top_n=3)
             return SectorSnapshot(
                 industry=profile.industry,
-                concepts=profile.concepts,
-                concept_performances=[],
+                concepts=[item.name for item in concept_boards] or profile.concepts,
+                concept_performances=[
+                    {"name": item.name, "pct_change": item.pct_change, "board_code": item.board_code}
+                    for item in concept_boards
+                ],
                 sector_performance=None,
-                related_stock_performance=[],
+                related_stock_performance=_merge_related_stocks([], concept_boards),
                 notes=notes,
             )
 
@@ -138,7 +142,7 @@ class AShareStockMoveFetcher:
         except Exception:
             board = None
         try:
-            concept_boards = self.board_fetcher.fetch_stock_concepts_by_date(profile.symbol, trade_date=trade_date, top_n=3)
+            concept_boards = self._fetch_concept_boards(profile.symbol, trade_date, top_n=3)
         except Exception:
             concept_boards = []
 
@@ -162,6 +166,39 @@ class AShareStockMoveFetcher:
             ),
             notes=notes,
         )
+
+    def _fetch_concept_boards(self, symbol: str, trade_date: str, top_n: int = 3) -> list[ConceptBoardSnapshot]:
+        try:
+            concept_boards = self.board_fetcher.fetch_stock_concepts_by_date(symbol, trade_date=trade_date, top_n=top_n)
+        except Exception:
+            concept_boards = []
+        if concept_boards:
+            return concept_boards
+
+        names = self._fetch_tushare_concept_names(symbol, top_n=top_n)
+        boards: list[ConceptBoardSnapshot] = []
+        for name in names:
+            try:
+                snapshot = self.board_fetcher.fetch_concept_snapshot(name, trade_date, top_n_constituents=5)
+            except Exception:
+                snapshot = None
+            boards.append(snapshot or ConceptBoardSnapshot(name=name, top_constituents=[]))
+        return boards
+
+    def _fetch_tushare_concept_names(self, symbol: str, top_n: int = 3) -> list[str]:
+        try:
+            pro = tushare_pro_client()
+            df = pro.concept_detail(ts_code=normalize_a_share_symbol(symbol))
+        except Exception:
+            return []
+        if df is None or df.empty:
+            return []
+
+        name_col = next((col for col in ("concept_name", "name", "概念名称") if col in df.columns), None)
+        if not name_col:
+            return []
+        names = [str(value).strip() for value in df[name_col].dropna().tolist()]
+        return list(dict.fromkeys([name for name in names if name]))[:top_n]
 
 
 def _merge_related_stocks(industry_constituents, concept_boards) -> list[dict]:

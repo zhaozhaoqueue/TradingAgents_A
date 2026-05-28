@@ -104,6 +104,32 @@ class _FakeProClient:
             ]
         )
 
+    def concept_detail(self, **kwargs):
+        return pd.DataFrame(
+            [
+                {"ts_code": "600000.SH", "concept_name": "人工智能"},
+                {"ts_code": "600000.SH", "concept_name": "机器人"},
+                {"ts_code": "600000.SH", "concept_name": "人工智能"},
+            ]
+        )
+
+
+class _ConceptFallbackBoardFetcher(_FakeBoardFetcher):
+    def fetch_stock_concepts_by_date(self, symbol: str, trade_date: str | None, top_n: int = 3):
+        return []
+
+    def fetch_concept_snapshot(self, concept_name: str, trade_date: str, top_n_constituents: int = 5):
+        return type(
+            "ConceptBoard",
+            (),
+            {
+                "name": concept_name,
+                "pct_change": 1.23,
+                "board_code": "GNX",
+                "top_constituents": [],
+            },
+        )()
+
 
 @pytest.mark.unit
 class FeatureExtractorTests(unittest.TestCase):
@@ -309,3 +335,15 @@ class StockMoveFetcherBoardTests(unittest.TestCase):
         self.assertEqual(snapshot.related_stock_performance[0]["symbol"], "300001")
         self.assertEqual(snapshot.concepts, ["储能"])
         self.assertEqual(snapshot.concept_performances[0]["pct_change"], 4.6)
+
+    def test_sector_snapshot_falls_back_to_tushare_concepts(self):
+        fetcher = AShareStockMoveFetcher(board_fetcher=_ConceptFallbackBoardFetcher())
+
+        with unittest.mock.patch("tradingagents.ashare_mvp.data.stock_move.tushare_pro_client", return_value=_FakeProClient()):
+            snapshot = fetcher._build_sector_snapshot(
+                StockProfile(symbol="600000.SH", industry="新能源"),
+                "2026-05-27",
+            )
+
+        self.assertEqual(snapshot.concepts, ["人工智能", "机器人"])
+        self.assertEqual(snapshot.concept_performances[0]["pct_change"], 1.23)
