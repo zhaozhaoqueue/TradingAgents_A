@@ -19,9 +19,10 @@ def render_stock_move_report(report: StockMoveReport) -> str:
         "## 1. 今日表现",
         "",
         f"- 涨跌幅：{_fmt_pct(features.pct_change)}",
-        f"- 成交额：{_fmt_num(features.amount)}",
+        f"- 成交额：{_fmt_amount(features.amount)}",
         f"- 换手率：{_fmt_pct(features.turnover_rate)}",
         f"- 所属行业：{profile.industry or '暂缺'}",
+        f"- 相关概念：{_concept_text(report)}",
         f"- 近 20 日位置：{_position_text(features)}",
         "",
         "## 2. 今天为什么这样走？",
@@ -164,6 +165,8 @@ def _price_watch_text(features: StockMoveFeatures) -> str:
 
 def _sector_watch_text(report: StockMoveReport) -> str:
     if report.sector_snapshot.sector_performance or report.sector_snapshot.related_stock_performance:
+        if report.sector_snapshot.concepts:
+            return "观察所属行业、相关概念和联动个股是否同步延续，避免把个股单日波动误读成板块主线。"
         return "观察所属行业和相关个股是否同步延续，避免把个股单日波动误读成板块主线。"
     return "当前板块数据不足，优先补齐行业涨跌、成分股表现和概念板块线索。"
 
@@ -189,8 +192,15 @@ def _data_gap_notes(report: StockMoveReport) -> list[str]:
     return notes
 
 
+def _concept_text(report: StockMoveReport) -> str:
+    concepts = report.sector_snapshot.concepts
+    if not concepts:
+        return "暂缺"
+    return "、".join(concepts[:3])
+
+
 def build_social_short(report: StockMoveReport) -> str:
-    summary = report.market_analysis.summary or report.news_analysis.summary
+    summary = _public_summary(report.market_analysis, "从量价结构看，个股当天存在一定异动特征。")
     label = _movement_label(report)
     risk_text = "; ".join(_reader_facing_compliance_notes(report)[:2]) or "消息面和板块联动证据仍需复核。"
     return (
@@ -201,7 +211,9 @@ def build_social_short(report: StockMoveReport) -> str:
 
 def build_short_video_copy(report: StockMoveReport) -> str:
     label = _movement_label(report)
-    news_summary = _safe_text(report.news_analysis.summary or "消息面没有看到特别强的单一催化").rstrip("。；; ")
+    news_summary = _safe_text(
+        _public_summary(report.news_analysis, "消息面没有看到特别强的单一催化")
+    ).rstrip("。；; ")
     return (
         f"今天看 {report.profile.name or report.profile.symbol}，"
         f"它更适合归类为{label}。盘面上最明显的特征是{_volume_text(report.features)}，"
@@ -266,7 +278,9 @@ def _analysis_bullets(
 ) -> list[str]:
     items = analysis.bullets or ([analysis.summary] if analysis.summary else [])
     if exclude_uncertainty:
-        items = [item for item in items if not _looks_like_uncertainty(item) and _is_report_evidence(item)]
+        items = [item for item in items if not _looks_like_uncertainty(item) and _is_public_reader_text(item)]
+    else:
+        items = [item for item in items if _is_public_reader_text(item)]
     if not items:
         items = [fallback]
     return [f"- {_safe_text(item)}" for item in items]
@@ -372,25 +386,7 @@ def _reader_facing_compliance_notes(report: StockMoveReport) -> list[str]:
 
 
 def _is_reader_facing_risk(text: str) -> bool:
-    internal_markers = (
-        "占位符",
-        "编辑器",
-        "合规审查",
-        "建议",
-        "改为",
-        "替换",
-        "客户",
-        "用户",
-        "交易策略",
-        "买入",
-        "决策",
-        "敏感表达",
-        "可改为",
-        "无需修改",
-        "应明确",
-        "需替换",
-    )
-    return bool(text.strip()) and not any(marker in text for marker in internal_markers)
+    return _is_public_reader_text(text)
 
 
 def _contains_negated_direct_match(text: str) -> bool:
@@ -416,14 +412,72 @@ def _contains_negated_direct_match(text: str) -> bool:
 
 
 def _is_report_evidence(text: str) -> bool:
+    if not _is_public_reader_text(text):
+        return False
+    internal_markers = ("链接:", "证据强度:", "强（", "中（", "弱（", "强度:")
+    return not any(marker in text for marker in internal_markers)
+
+
+def _is_public_reader_text(text: str) -> bool:
+    text = str(text or "").strip()
+    if not text:
+        return False
     internal_markers = (
+        "占位符",
+        "编辑器",
+        "合规审查",
+        "建议",
+        "改为",
+        "替换",
+        "客户",
+        "用户",
+        "交易策略",
+        "买入",
+        "决策",
+        "敏感表达",
+        "可改为",
+        "无需修改",
+        "应明确",
+        "需替换",
+        "若未修正",
+        "合规审计",
+        "应附条件",
+        "notes ",
+        "evidence ",
+        "summary ",
         "sector_performance",
         "related_stock_performance",
-        "notes 明确注明",
-        "为空值",
         "null",
+        "为空值",
+        "证据强度:",
     )
-    return _is_reader_facing_risk(text) and not any(marker in text for marker in internal_markers)
+    if any(marker in text for marker in internal_markers):
+        return False
+    code_like_markers = (
+        "close=",
+        "pct_change=",
+        "volume_ratio",
+        "position_vs",
+        "close_5ma",
+        "close_10ma",
+        "close_20ma",
+        "rebound_from",
+        "breakout_",
+        "=true",
+        "=false",
+        "price_move",
+        "volume_expansion",
+        "volume_surge",
+        "rebound",
+    )
+    return not any(marker in text for marker in code_like_markers)
+
+
+def _public_summary(analysis: StockMoveAnalysis, fallback: str) -> str:
+    summary = str(analysis.summary or "").strip()
+    if not _is_public_reader_text(summary):
+        return fallback
+    return summary
 
 
 def _safe_text(text: str) -> str:
@@ -453,6 +507,17 @@ def _fmt_num(value: float | None) -> str:
     if value is None:
         return "暂缺"
     return f"{value:,.2f}"
+
+
+def _fmt_amount(value: float | None) -> str:
+    if value is None:
+        return "暂缺"
+    abs_value = abs(value)
+    if abs_value >= 1e8:
+        return f"{value / 1e8:.2f}亿元"
+    if abs_value >= 1e4:
+        return f"{value / 1e4:.2f}万元"
+    return f"{value:,.2f}元"
 
 
 def _fmt_pct(value: float | None) -> str:
@@ -518,7 +583,7 @@ def render_daily_review_report(report: DailyReviewReport) -> str:
         lines.append(f"- {index.name}：{_fmt_pct(index.pct_change)}")
     lines.extend(
         [
-            f"- 市场成交额：{_fmt_num(dataset.market_turnover)}",
+            f"- 市场成交额：{_fmt_amount(dataset.market_turnover)}",
             f"- 市场情绪：{features.market_sentiment or '暂缺'}",
             f"- 结构特征：{_daily_structure_text(report)}",
             "",
@@ -530,8 +595,9 @@ def render_daily_review_report(report: DailyReviewReport) -> str:
         for idx, sector in enumerate(dataset.hot_sectors, start=1):
             symbols = "、".join(sector.get("symbols", [])[:3])
             pct = _fmt_pct(_coerce_float(sector.get("pct_change")))
+            board_type = "行业" if sector.get("board_type") == "industry" else "概念" if sector.get("board_type") == "concept" else "板块"
             lines.append(
-                f"{idx}. {sector.get('name')}：板块涨跌幅 {pct}，"
+                f"{idx}. {sector.get('name')}（{board_type}）：板块涨跌幅 {pct}，"
                 f"高成交额样本中出现 {sector.get('count', '若干')} 次，代表个股包括 {symbols or '暂缺'}。"
             )
     else:
@@ -548,7 +614,7 @@ def render_daily_review_report(report: DailyReviewReport) -> str:
     movers = (dataset.top_gainers[:5] + dataset.top_losers[:5])[:10]
     for mover in movers:
         lines.append(
-            f"| {mover.name or mover.symbol} | {_fmt_pct(mover.pct_change)} | {mover.industry or '暂缺'} | {_safe_text(mover.reason or '待补充')} | {_safe_text(mover.risk or '待复核')} |"
+            f"| {mover.name or mover.symbol} | {_fmt_pct(mover.pct_change)} | {_mover_board_text(mover)} | {_safe_text(mover.reason or '待补充')} | {_safe_text(mover.risk or '待复核')} |"
         )
     lines.extend(
         [
@@ -604,6 +670,15 @@ def _daily_structure_text(report: DailyReviewReport) -> str:
     if top_sector:
         return f"市场情绪{sentiment}，高成交额方向相对集中在{top_sector}等板块。"
     return f"市场情绪{sentiment}，热点方向仍需结合新闻和成交额榜继续核对。"
+
+
+def _mover_board_text(mover) -> str:
+    parts = []
+    if mover.industry:
+        parts.append(mover.industry)
+    if mover.concepts:
+        parts.append("/".join(mover.concepts[:2]))
+    return " + ".join(parts) if parts else "暂缺"
 
 
 def _daily_watch_section(report: DailyReviewReport) -> list[str]:

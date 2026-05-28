@@ -28,7 +28,7 @@ class AShareDailyReviewFetcher:
         market_df = self._fetch_market_snapshot(trade_date, notes)
         profile_map = self._fetch_profile_map(notes)
         top_gainers, top_losers, top_by_amount, market_turnover = self._build_movers(
-            market_df, profile_map, top_n_movers
+            market_df, profile_map, top_n_movers, trade_date
         )
         important_news_text = self._fetch_news(trade_date, notes)
         hot_sectors = self._build_hot_sectors(top_by_amount, top_n_sectors, notes)
@@ -65,7 +65,7 @@ class AShareDailyReviewFetcher:
                         name=name,
                         close=_safe_float(row.get("close")),
                         pct_change=_safe_pct_from_change(row.get("change"), row.get("pre_close")),
-                        amount=_safe_float(row.get("amount")),
+                        amount=_coerce_tushare_amount(row.get("amount")),
                     )
                 )
         except Exception:
@@ -81,6 +81,9 @@ class AShareDailyReviewFetcher:
             if df is None or df.empty:
                 notes.append("全市场日行情暂缺。")
                 return pd.DataFrame()
+            if "amount" in df.columns:
+                df = df.copy()
+                df["amount"] = pd.to_numeric(df["amount"], errors="coerce") * 1000.0
             daily_basic = pro.daily_basic(
                 trade_date=ymd,
                 fields="ts_code,turnover_rate,volume_ratio,total_mv,circ_mv",
@@ -98,7 +101,7 @@ class AShareDailyReviewFetcher:
             basic = pro.stock_basic(
                 exchange="",
                 list_status="L",
-                fields="ts_code,name,industry",
+                fields="ts_code,name,industry,list_date",
             )
             if basic is None or basic.empty:
                 return {}
@@ -112,6 +115,7 @@ class AShareDailyReviewFetcher:
         df: pd.DataFrame,
         profile_map: dict[str, dict],
         top_n_movers: int,
+        trade_date: str,
     ) -> tuple[list[DailyMover], list[DailyMover], list[DailyMover], float | None]:
         if df.empty:
             return [], [], [], None
@@ -122,6 +126,12 @@ class AShareDailyReviewFetcher:
         )
         work["amount"] = pd.to_numeric(work.get("amount"), errors="coerce")
         market_turnover = _safe_float(work["amount"].sum())
+        excluded_mask = work["ts_code"].apply(
+            lambda symbol: self._is_excluded_security(symbol, profile_map, trade_date)
+        )
+        work = work.loc[~excluded_mask].copy()
+        if work.empty:
+            return [], [], [], market_turnover
 
         gainers = work.sort_values("pct_change", ascending=False).head(top_n_movers)
         losers = work.sort_values("pct_change", ascending=True).head(top_n_movers)
@@ -150,11 +160,30 @@ class AShareDailyReviewFetcher:
                     pct_change=_safe_float(row.get("pct_change")),
                     amount=_safe_float(row.get("amount")),
                     industry=profile.get("industry"),
+                    concepts=[],
                     reason=default_reason,
                     risk=default_risk,
                 )
             )
         return movers
+
+    def _is_excluded_security(self, symbol: str, profile_map: dict[str, dict], trade_date: str) -> bool:
+        profile = profile_map.get(symbol, {})
+        name = str(profile.get("name") or "").strip().upper()
+        if not name:
+            return False
+        if name.startswith(("*ST", "ST", "S*ST", "SST", "N", "C")):
+            return True
+
+        list_date = str(profile.get("list_date") or "").strip()
+        if list_date and list_date.isdigit() and len(list_date) == 8:
+            try:
+                listed_days = (datetime.strptime(trade_date, "%Y-%m-%d") - datetime.strptime(list_date, "%Y%m%d")).days
+                if listed_days <= 30:
+                    return True
+            except ValueError:
+                pass
+        return False
 
     def _fetch_news(self, trade_date: str, notes: list[str]) -> str:
         try:
@@ -164,21 +193,48 @@ class AShareDailyReviewFetcher:
             return f"No reliable global news found for {trade_date}"
 
     def _build_hot_sectors(self, top_by_amount: list[DailyMover], top_n_sectors: int, notes: list[str]) -> list[dict]:
+        merged_boards: list[dict] = []
         try:
-            boards = self.board_fetcher.fetch_hot_industry_boards(top_n_sectors)
-            if boards:
-                return [
+            industry_boards = self.board_fetcher.fetch_hot_industry_boards(top_n_sectors)
+            concept_boards = self.board_fetcher.fetch_hot_concept_boards(top_n_sectors)
+            if industry_boards or concept_boards:
+                industry_rows = [
                     {
                         "name": board.name,
+                        "board_type": "industry",
                         "pct_change": board.pct_change,
                         "turnover": board.turnover,
                         "count": len(board.top_constituents or []),
                         "symbols": [item.get("symbol") for item in (board.top_constituents or []) if item.get("symbol")],
                     }
-                    for board in boards
+                    for board in industry_boards
                 ]
+                concept_rows = [
+                    {
+                        "name": board.name,
+                        "board_type": "concept",
+                        "pct_change": board.pct_change,
+                        "turnover": board.turnover,
+                        "count": len(board.top_constituents or []),
+                        "symbols": [item.get("symbol") for item in (board.top_constituents or []) if item.get("symbol")],
+                    }
+                    for board in concept_boards
+                ]
+                industry_rows.sort(
+                    key=lambda item: item.get("pct_change") if item.get("pct_change") is not None else float("-inf"),
+                    reverse=True,
+                )
+                concept_rows.sort(
+                    key=lambda item: item.get("pct_change") if item.get("pct_change") is not None else float("-inf"),
+                    reverse=True,
+                )
+                industry_limit = max(1, (top_n_sectors + 1) // 2)
+                concept_limit = max(0, top_n_sectors - industry_limit)
+                merged_boards.extend(industry_rows[:industry_limit])
+                merged_boards.extend(concept_rows[:concept_limit])
+                return merged_boards[:top_n_sectors]
         except Exception:
-            notes.append("行业板块实时排行获取失败，已退回行业聚类逻辑。")
+            notes.append("行业/概念板块实时排行获取失败，已退回行业聚类逻辑。")
 
         counts: dict[str, dict] = {}
         for mover in top_by_amount:
@@ -197,12 +253,27 @@ class AShareDailyReviewFetcher:
 
     def _annotate_movers(self, movers: list[DailyMover], amount_leaders: list[DailyMover], hot_sectors: list[dict]) -> None:
         amount_symbols = {m.symbol for m in amount_leaders}
-        sector_map = {item.get("name"): item for item in hot_sectors}
+        sector_map = {
+            item.get("name"): item
+            for item in hot_sectors
+            if item.get("board_type") in (None, "industry")
+        }
+        concept_membership = self._build_concept_membership(hot_sectors)
         for mover in movers:
             mover.is_amount_leader = mover.symbol in amount_symbols
             sector = sector_map.get(mover.industry or "")
             if sector:
                 mover.industry_pct_change = _safe_float(sector.get("pct_change"))
+            mover.concepts = concept_membership.get(mover.symbol, [])
+
+    def _build_concept_membership(self, hot_sectors: list[dict]) -> dict[str, list[str]]:
+        membership: dict[str, list[str]] = {}
+        for item in hot_sectors:
+            if item.get("board_type") != "concept":
+                continue
+            for symbol in item.get("symbols", []):
+                membership.setdefault(symbol, []).append(item.get("name"))
+        return membership
 
 
 def _safe_float(value) -> float | None:
@@ -220,3 +291,10 @@ def _safe_pct_from_change(change, pre_close) -> float | None:
     if change is None or pre_close in (None, 0):
         return None
     return change / pre_close * 100.0
+
+
+def _coerce_tushare_amount(value) -> float | None:
+    amount = _safe_float(value)
+    if amount is None:
+        return None
+    return amount * 1000.0

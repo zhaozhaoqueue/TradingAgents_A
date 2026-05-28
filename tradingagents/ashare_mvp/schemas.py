@@ -27,6 +27,7 @@ class SectorSnapshot:
     industry: str | None = None
     concepts: list[str] = field(default_factory=list)
     sector_performance: str | None = None
+    concept_performances: list[dict[str, Any]] = field(default_factory=list)
     related_stock_performance: list[dict[str, Any]] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
@@ -108,6 +109,7 @@ class DailyMover:
     pct_change: float | None = None
     amount: float | None = None
     industry: str | None = None
+    concepts: list[str] = field(default_factory=list)
     industry_pct_change: float | None = None
     is_amount_leader: bool = False
     reason: str | None = None

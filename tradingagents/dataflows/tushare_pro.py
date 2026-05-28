@@ -75,6 +75,9 @@ def _normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
     for col in ["Open", "High", "Low", "Close", "Volume", "Amount"]:
         if col in out:
             out[col] = pd.to_numeric(out[col], errors="coerce")
+    if "Amount" in out:
+        # TuShare daily/pro_bar amount is reported in 千元; normalize to 元.
+        out["Amount"] = out["Amount"] * 1000.0
     out = out.dropna(subset=["Date", "Close"])
     return out.sort_values("Date").reset_index(drop=True)
 
@@ -82,7 +85,7 @@ def _normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
 def get_ohlcv_dataframe(symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
     ts_code = normalize_a_share_symbol(symbol)
     adj = get_config().get("tushare_adj", "qfq")
-    extra = {"adj": adj}
+    extra = {"adj": adj, "amount_unit": "cny_v2"}
     cached = read_dataframe("tushare_pro", "daily", ts_code, start_date, end_date, extra)
     if cached is not None:
         if "Date" in cached:

@@ -118,6 +118,7 @@ class DailyReviewPipeline:
         ]
         amount_symbols = {m.symbol for m in dataset.top_by_amount}
         sector_map = {item.get("name"): item for item in dataset.hot_sectors}
+        concept_membership = self._build_concept_membership(dataset.hot_sectors)
         for bucket_name, movers in (
             ("gainer", dataset.top_gainers),
             ("loser", dataset.top_losers),
@@ -128,6 +129,8 @@ class DailyReviewPipeline:
                 sector = sector_map.get(mover.industry or "")
                 if sector and mover.industry_pct_change is None:
                     mover.industry_pct_change = _safe_float(sector.get("pct_change"))
+                if not mover.concepts:
+                    mover.concepts = concept_membership.get(mover.symbol, [])
                 mover.reason = self._build_reason(mover, news_titles, bucket_name)
                 mover.risk = self._build_risk(mover, bucket_name)
 
@@ -145,6 +148,8 @@ class DailyReviewPipeline:
                 reasons.append(f"所属行业板块同步走强（{mover.industry_pct_change:.2f}%）")
             elif mover.industry_pct_change <= -2:
                 reasons.append(f"所属行业板块同步承压（{mover.industry_pct_change:.2f}%）")
+        if mover.concepts:
+            reasons.append(f"同时落在热点概念板块：{'、'.join(mover.concepts[:2])}")
 
         keyword = self._match_news_keyword(mover, news_titles)
         if keyword:
@@ -170,6 +175,8 @@ class DailyReviewPipeline:
 
         if mover.industry_pct_change is None:
             risks.append("行业板块数据不足，联动判断需保守")
+        if not mover.concepts:
+            risks.append("概念板块映射仍是热点样本口径，题材共振需继续复核")
         if mover.pct_change is not None and abs(mover.pct_change) >= 9:
             risks.append("单日波动较大，需结合公告和成交结构复核")
         return "；".join(dict.fromkeys(risks))
@@ -184,6 +191,15 @@ class DailyReviewPipeline:
             if any(re.search(pattern, title, re.IGNORECASE) for title in news_titles):
                 return candidate
         return None
+
+    def _build_concept_membership(self, hot_sectors: list[dict]) -> dict[str, list[str]]:
+        membership: dict[str, list[str]] = {}
+        for item in hot_sectors:
+            if item.get("board_type") != "concept":
+                continue
+            for symbol in item.get("symbols", []):
+                membership.setdefault(symbol, []).append(item.get("name"))
+        return membership
 
 
 def _safe_float(value) -> float | None:

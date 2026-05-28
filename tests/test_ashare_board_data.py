@@ -34,6 +34,39 @@ class _FakeAk:
             ]
         )
 
+    def stock_board_concept_name_em(self):
+        return pd.DataFrame(
+            [
+                {"板块名称": "人形机器人", "涨跌幅": 6.8, "板块代码": "GN1", "成交额": 150},
+                {"板块名称": "AI算力", "涨跌幅": 4.2, "板块代码": "GN2", "成交额": 90},
+            ]
+        )
+
+    def stock_board_concept_cons_em(self, symbol: str):
+        mapping = {
+            "人形机器人": [
+                {"代码": "300001", "名称": "甲公司", "涨跌幅": 11.2, "最新价": 13.1},
+                {"代码": "300020", "名称": "丙公司", "涨跌幅": 7.5, "最新价": 15.8},
+            ],
+            "AI算力": [
+                {"代码": "600010", "名称": "丁公司", "涨跌幅": 4.1, "最新价": 10.2},
+            ],
+        }
+        return pd.DataFrame(mapping.get(symbol, []))
+
+    def stock_board_concept_hist_em(self, symbol: str, start_date: str, end_date: str, period: str, adjust: str):
+        mapping = {
+            "人形机器人": [
+                {"日期": "2026-05-26", "涨跌幅": 4.8},
+                {"日期": "2026-05-27", "涨跌幅": 5.6},
+            ],
+            "AI算力": [
+                {"日期": "2026-05-26", "涨跌幅": 2.1},
+                {"日期": "2026-05-27", "涨跌幅": 3.4},
+            ],
+        }
+        return pd.DataFrame(mapping.get(symbol, []))
+
 
 @pytest.mark.unit
 class BoardDataFetcherTests(unittest.TestCase):
@@ -65,3 +98,36 @@ class BoardDataFetcherTests(unittest.TestCase):
         self.assertIsNotNone(board)
         self.assertEqual(board.name, "机器人")
         self.assertEqual(board.top_constituents[0]["symbol"], "300001.SZ")
+
+    def test_fetch_hot_concept_boards(self):
+        fetcher = AShareBoardDataFetcher(ak_client=_FakeAk())
+
+        boards = fetcher.fetch_hot_concept_boards(top_n=2)
+
+        self.assertEqual(len(boards), 2)
+        self.assertEqual(boards[0].name, "人形机器人")
+        self.assertEqual(boards[0].top_constituents[0]["symbol"], "300001.SZ")
+
+    def test_fetch_stock_concepts(self):
+        fetcher = AShareBoardDataFetcher(ak_client=_FakeAk())
+
+        boards = fetcher.fetch_stock_concepts("300001.SZ", top_n=2)
+
+        self.assertEqual([item.name for item in boards], ["人形机器人"])
+
+    def test_fetch_concept_snapshot_uses_hist_for_trade_date(self):
+        fetcher = AShareBoardDataFetcher(ak_client=_FakeAk())
+
+        board = fetcher.fetch_concept_snapshot("人形机器人", "2026-05-27")
+
+        self.assertIsNotNone(board)
+        self.assertEqual(board.name, "人形机器人")
+        self.assertEqual(board.pct_change, 5.6)
+
+    def test_fetch_stock_concepts_by_date_uses_hist_snapshot(self):
+        fetcher = AShareBoardDataFetcher(ak_client=_FakeAk())
+
+        boards = fetcher.fetch_stock_concepts_by_date("300001.SZ", trade_date="2026-05-27", top_n=2)
+
+        self.assertEqual([item.name for item in boards], ["人形机器人"])
+        self.assertEqual(boards[0].pct_change, 5.6)

@@ -15,6 +15,7 @@ from tradingagents.ashare_mvp.analysis import _parse_analysis
 from tradingagents.ashare_mvp.pipeline.stock_move_pipeline import StockMovePipeline
 from tradingagents.ashare_mvp.renderers import render_stock_move_report
 from tradingagents.dataflows.akshare_data import _normalize_hist
+from tradingagents.dataflows.tushare_pro import _normalize_ohlcv as _normalize_tushare_ohlcv
 from tradingagents.ashare_mvp.schemas import (
     SectorSnapshot,
     StockMoveAnalysis,
@@ -76,6 +77,23 @@ class _FakeBoardFetcher:
             ],
         )
 
+    def fetch_stock_concepts(self, symbol: str, top_n: int = 3):
+        return [
+            type(
+                "ConceptBoard",
+                (),
+                {
+                    "name": "储能",
+                    "pct_change": 4.6,
+                    "board_code": "GN1",
+                    "top_constituents": [{"symbol": "300111.SZ", "name": "甲概念股", "pct_change": 8.8}],
+                },
+            )()
+        ][:top_n]
+
+    def fetch_stock_concepts_by_date(self, symbol: str, trade_date: str | None, top_n: int = 3):
+        return self.fetch_stock_concepts(symbol, top_n=top_n)
+
 
 class _FakeProClient:
     def daily_basic(self, **kwargs):
@@ -117,6 +135,25 @@ class FeatureExtractorTests(unittest.TestCase):
         normalized = _normalize_hist(df)
 
         self.assertEqual(normalized.iloc[0]["TurnoverRate"], 4.56)
+
+    def test_tushare_history_normalizes_amount_to_yuan(self):
+        df = pd.DataFrame(
+            [
+                {
+                    "trade_date": "20260527",
+                    "open": 10,
+                    "high": 11,
+                    "low": 9,
+                    "close": 10.5,
+                    "vol": 1000,
+                    "amount": 22373358.9,
+                }
+            ]
+        )
+
+        normalized = _normalize_tushare_ohlcv(df)
+
+        self.assertEqual(normalized.iloc[0]["Amount"], 22373358900.0)
 
 
 @pytest.mark.unit
@@ -182,6 +219,7 @@ class StockMovePipelineTests(unittest.TestCase):
         self.assertNotIn("\n- 三\n- 条\n- 新\n- 闻", markdown)
         self.assertNotIn("占位符", markdown)
         self.assertIn("可能带来误读风险", markdown)
+        self.assertNotIn("合规审查", markdown)
 
     def test_observation_does_not_treat_negated_news_as_direct_evidence(self):
         report = StockMoveReport(
@@ -204,6 +242,43 @@ class StockMovePipelineTests(unittest.TestCase):
 
         self.assertIn("目前更多是行业或背景线索", markdown)
         self.assertNotIn("已经有个股相关公开信息", markdown)
+
+    def test_render_filters_code_like_evidence_and_internal_review_notes(self):
+        report = StockMoveReport(
+            input=StockMoveInput(symbol="300750.SZ", trade_date="2026-05-27"),
+            profile=StockProfile(symbol="300750.SZ", name="宁德时代", industry="电气设备"),
+            sector_snapshot=SectorSnapshot(industry="电气设备"),
+            features=StockMoveFeatures(amount=22_373_358_900.0, pct_change=3.06, volume_ratio_vs_20d=1.54),
+            market_analysis=StockMoveAnalysis(
+                summary="量价存在一定异动。",
+                bullets=["close=414.8, pct_change=3.056%", "收盘高于5日均线。"],
+                evidence=["rebound_from_20d_low=true", "收盘高于5日均线。"],
+                risks=[],
+            ),
+            news_analysis=StockMoveAnalysis(
+                summary="消息面存在公开线索。",
+                bullets=["赛力斯蓝电增资，宁德时代参与入股。"],
+                evidence=["证据强度: 强", "赛力斯蓝电增资，宁德时代参与入股。"],
+                risks=[],
+            ),
+            sector_analysis=StockMoveAnalysis(summary="板块数据不足。", bullets=[], evidence=[]),
+            compliance_notes=[
+                "若未修正‘中等强度’等定性词汇，在合规审计中可能触发风险。",
+                "行业板块涨跌数据暂缺，板块联动判断需要保守。",
+            ],
+            markdown="",
+        )
+
+        markdown = render_stock_move_report(report)
+
+        self.assertIn("223.73亿元", markdown)
+        self.assertNotIn("close=414.8", markdown)
+        self.assertNotIn("rebound_from_20d_low", markdown)
+        self.assertNotIn("证据强度", markdown)
+        self.assertNotIn("若未修正", markdown)
+        self.assertNotIn("强度: 中等", markdown)
+        self.assertNotIn("price_move", markdown)
+        self.assertIn("赛力斯蓝电增资，宁德时代参与入股。", markdown)
 
 
 @pytest.mark.unit
@@ -232,3 +307,5 @@ class StockMoveFetcherBoardTests(unittest.TestCase):
 
         self.assertEqual(snapshot.sector_performance, "2.40%")
         self.assertEqual(snapshot.related_stock_performance[0]["symbol"], "300001")
+        self.assertEqual(snapshot.concepts, ["储能"])
+        self.assertEqual(snapshot.concept_performances[0]["pct_change"], 4.6)

@@ -4,6 +4,7 @@ import copy
 import tempfile
 import unittest
 
+import pandas as pd
 import pytest
 
 import tradingagents.default_config as default_config
@@ -44,8 +45,9 @@ class _FakeDailyFetcher:
                 DailyMover(symbol="600010.SH", name="己公司", pct_change=2.5, amount=10500000, industry="算力"),
             ],
             hot_sectors=[
-                {"name": "机器人", "count": 2, "symbols": ["300001.SZ", "300010.SZ"], "pct_change": 5.2},
-                {"name": "算力", "count": 1, "symbols": ["600010.SH"], "pct_change": 3.1},
+                {"name": "机器人", "board_type": "industry", "count": 2, "symbols": ["300001.SZ", "300010.SZ"], "pct_change": 5.2},
+                {"name": "人形机器人", "board_type": "concept", "count": 1, "symbols": ["300001.SZ"], "pct_change": 6.8},
+                {"name": "算力", "board_type": "industry", "count": 1, "symbols": ["600010.SH"], "pct_change": 3.1},
             ],
             important_news_text="## China Market News\n\n### 政策继续支持科技制造和机器人方向 (source: test)\n### 市场关注流动性预期变化 (source: test)\n",
             notes=[],
@@ -59,6 +61,20 @@ class _FakeBoardFetcher:
             IndustryBoardSnapshot(name="算力", pct_change=3.1, top_constituents=[{"symbol": "600010.SH"}]),
         ][:top_n]
 
+    def fetch_hot_concept_boards(self, top_n: int = 5):
+        return [
+            type(
+                "ConceptBoard",
+                (),
+                {"name": "人形机器人", "pct_change": 6.8, "turnover": None, "top_constituents": [{"symbol": "300001.SZ"}]},
+            )(),
+            type(
+                "ConceptBoard",
+                (),
+                {"name": "液冷服务器", "pct_change": 4.5, "turnover": None, "top_constituents": [{"symbol": "600010.SH"}]},
+            )(),
+        ][:top_n]
+
 
 @pytest.mark.unit
 class DailyReviewFeatureTests(unittest.TestCase):
@@ -68,6 +84,18 @@ class DailyReviewFeatureTests(unittest.TestCase):
 
         self.assertEqual(features.market_sentiment, "偏强")
         self.assertGreater(features.avg_gainer_move, 8.0)
+
+    def test_extract_prefers_divergence_when_indexes_are_weak(self):
+        dataset = _FakeDailyFetcher().fetch("2026-05-27")
+        dataset.indices = [
+            DailyIndexSnapshot(symbol="000001.SH", name="上证指数", pct_change=-1.25),
+            DailyIndexSnapshot(symbol="399001.SZ", name="深证成指", pct_change=-0.88),
+            DailyIndexSnapshot(symbol="399006.SZ", name="创业板指", pct_change=0.07),
+        ]
+
+        features = DailyReviewFeatureExtractor().extract(dataset)
+
+        self.assertEqual(features.market_sentiment, "高波动分化")
 
 
 @pytest.mark.unit
@@ -90,6 +118,7 @@ class DailyReviewPipelineTests(unittest.TestCase):
         self.assertIn("## 6. 输出边界", report.markdown)
         self.assertIn("机器人", report.markdown)
         self.assertIn("所属行业板块同步走强", report.markdown)
+        self.assertIn("人形机器人", report.markdown)
         self.assertNotIn("偏偏强", report.markdown)
 
     def test_pipeline_enriches_mover_reason_and_risk(self):
@@ -100,6 +129,7 @@ class DailyReviewPipelineTests(unittest.TestCase):
         top_gainer = report.dataset.top_gainers[0]
         self.assertIn("成交额活跃", top_gainer.reason)
         self.assertIn("机器人", top_gainer.reason)
+        self.assertIn("人形机器人", top_gainer.reason)
         self.assertIn("分歧可能上升", top_gainer.risk)
 
     def test_real_fetcher_hot_sectors_prefers_board_data(self):
@@ -115,10 +145,14 @@ class DailyReviewPipelineTests(unittest.TestCase):
 
         self.assertEqual(result[0]["name"], "机器人")
         self.assertEqual(result[0]["symbols"], ["300001.SZ"])
+        self.assertIn("board_type", result[0])
 
     def test_hot_sector_fallback_estimates_pct_change_from_amount_leaders(self):
         class _FailingBoardFetcher:
             def fetch_hot_industry_boards(self, top_n: int = 5):
+                raise RuntimeError("board unavailable")
+
+            def fetch_hot_concept_boards(self, top_n: int = 5):
                 raise RuntimeError("board unavailable")
 
         fetcher = AShareDailyReviewFetcher(board_fetcher=_FailingBoardFetcher())
@@ -135,3 +169,31 @@ class DailyReviewPipelineTests(unittest.TestCase):
         self.assertEqual(result[0]["name"], "机器人")
         self.assertEqual(result[0]["pct_change"], 3.0)
         self.assertEqual(result[0]["source"], "top_by_amount_industry_cluster")
+
+    def test_build_movers_filters_new_st_and_first_day_samples(self):
+        fetcher = AShareDailyReviewFetcher(board_fetcher=_FakeBoardFetcher())
+        market_df = pd.DataFrame(
+            [
+                {"ts_code": "300001.SZ", "change": 2.0, "pre_close": 10.0, "amount": 100000.0},
+                {"ts_code": "300002.SZ", "change": 10.0, "pre_close": 10.0, "amount": 200000.0},
+                {"ts_code": "300003.SZ", "change": 8.0, "pre_close": 10.0, "amount": 180000.0},
+                {"ts_code": "300004.SZ", "change": 6.0, "pre_close": 10.0, "amount": 160000.0},
+            ]
+        )
+        profile_map = {
+            "300001.SZ": {"name": "正常公司", "industry": "机器人", "list_date": "20240101"},
+            "300002.SZ": {"name": "N长进", "industry": "通信设备", "list_date": "20260527"},
+            "300003.SZ": {"name": "*ST样本", "industry": "消费", "list_date": "20200101"},
+            "300004.SZ": {"name": "次新股", "industry": "算力", "list_date": "20260510"},
+        }
+
+        gainers, losers, active, market_turnover = fetcher._build_movers(
+            market_df,
+            profile_map,
+            top_n_movers=10,
+            trade_date="2026-05-27",
+        )
+
+        self.assertEqual([item.symbol for item in gainers], ["300001.SZ"])
+        self.assertEqual([item.symbol for item in active], ["300001.SZ"])
+        self.assertEqual(market_turnover, 640000.0)

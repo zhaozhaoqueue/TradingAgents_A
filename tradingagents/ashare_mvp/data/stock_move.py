@@ -125,26 +125,59 @@ class AShareStockMoveFetcher:
             return SectorSnapshot(
                 industry=profile.industry,
                 concepts=profile.concepts,
+                concept_performances=[],
                 sector_performance=None,
                 related_stock_performance=[],
                 notes=notes,
             )
 
         board = None
+        concept_boards = []
         try:
             board = self.board_fetcher.fetch_industry_snapshot(profile.industry, trade_date)
         except Exception:
             board = None
+        try:
+            concept_boards = self.board_fetcher.fetch_stock_concepts_by_date(profile.symbol, trade_date=trade_date, top_n=3)
+        except Exception:
+            concept_boards = []
 
         if board is None or board.pct_change is None:
             notes.append("行业板块涨跌数据暂缺，板块联动判断需保守处理。")
         if not board or not board.top_constituents:
             notes.append("行业板块成分股明细暂缺。")
-        notes.append("概念板块数据仍未稳定接入，当前板块联动以行业板块为主。")
+        if not concept_boards:
+            notes.append("概念板块数据仍较弱，当前题材共振判断以热点概念样本为辅。")
         return SectorSnapshot(
             industry=profile.industry,
-            concepts=profile.concepts,
+            concepts=[item.name for item in concept_boards] or profile.concepts,
+            concept_performances=[
+                {"name": item.name, "pct_change": item.pct_change, "board_code": item.board_code}
+                for item in concept_boards
+            ],
             sector_performance=f"{board.pct_change:.2f}%" if board and board.pct_change is not None else None,
-            related_stock_performance=board.top_constituents if board and board.top_constituents else [],
+            related_stock_performance=_merge_related_stocks(
+                board.top_constituents if board and board.top_constituents else [],
+                concept_boards,
+            ),
             notes=notes,
         )
+
+
+def _merge_related_stocks(industry_constituents, concept_boards) -> list[dict]:
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for item in industry_constituents or []:
+        symbol = str(item.get("symbol") or "")
+        if symbol and symbol not in seen:
+            merged.append(item)
+            seen.add(symbol)
+    for board in concept_boards or []:
+        for item in board.top_constituents or []:
+            symbol = str(item.get("symbol") or "")
+            if symbol and symbol not in seen:
+                enriched = dict(item)
+                enriched.setdefault("board", board.name)
+                merged.append(enriched)
+                seen.add(symbol)
+    return merged

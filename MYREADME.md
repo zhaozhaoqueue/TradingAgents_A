@@ -618,6 +618,14 @@ conda run -n tradingagents python -m cli.main ashare stock-move \
   --no-print
 ```
 
+```bash
+TRADINGAGENTS_CACHE_DIR=/Users/luka/Desktop/personal/TradingAgents_A/.tradingagents-cache \
+conda run -n tradingagents python -m cli.main ashare daily-review \
+  --date 2026-05-27 \
+  --output reports/daily_review/ashare_daily_review_2026-05-27.md \
+  --no-print
+```
+
 #### 为什么不建议直接运行 python main.py
 
 ```text
@@ -804,7 +812,7 @@ tests/test_ashare_mvp_stock_move.py
 ### 4.2 当前限制
 
 ```text
-行业板块已接入，但概念板块仍未接入正式链路。
+行业板块和概念板块都已接入，但概念板块目前仍是热点样本口径，不是全市场稳定映射。
 真实运行依赖可用的 TuShare Token 或 AkShare 网络访问。
 如果 LLM 不可用，当前会自动退回规则化分析。
 盘后热点复盘当前是第一版，更多依赖规则归因而非深度多角色分析。
@@ -815,20 +823,20 @@ tests/test_ashare_mvp_stock_move.py
 
 ```text
 1. 跑通真实 stock-move 报告并打磨输出质量
-2. 补概念板块数据接口
+2. 增强概念板块映射稳定性和覆盖面
 3. 增强合规过滤与风险提示
 4. 增强盘后复盘里的热点主线解释和逐股归因质量
 5. 视情况增加批量运行和定时推送
 ```
 
-### 4.4 概念板块数据接口 TODO
+### 4.4 概念板块数据接口状态与剩余 TODO
 
 ```text
-目标：
-把当前以行业板块为主的热点主线判断，升级为“行业板块 + 概念板块”双层结构。
+当前状态：
+已经完成“行业板块 + 概念板块”双层结构的第一版接入。
 ```
 
-#### 需要接入的接口
+#### 已接入接口
 
 ```text
 AkShare:
@@ -837,7 +845,7 @@ AkShare:
 - stock_board_concept_cons_em
 ```
 
-#### 计划实现内容
+#### 已完成内容
 
 ```text
 1. 新增 concept board fetcher
@@ -847,23 +855,37 @@ AkShare:
   获取概念板块成分股
 
 3. daily-review 接入概念板块
-  在热点板块列表中同时展示行业主线和概念主线
+  热点板块现在会按“行业 + 概念”双层结构输出
 
 4. stock-move 接入概念板块
-  除所属行业外，补充可能相关的概念板块联动说明
+  板块快照中会补充相关概念和概念板块涨跌线索
 
-5. 主线解释增强
-  区分“行业驱动”“概念驱动”“行业+概念共振”
+5. 逐股归因增强
+  daily-review 中会把热点概念映射回个股归因文案
 ```
 
-#### 当前暂未做的原因
+#### 剩余 TODO
 
 ```text
-概念板块和个股映射会比行业板块更复杂，
+1. 扩大个股概念映射覆盖范围
+  当前 stock-move 主要基于热点概念样本反查个股，还不是完整概念画像
+
+2. 主线解释增强
+  区分“行业驱动”“概念驱动”“行业 + 概念共振”“纯个股事件”
+
+3. 数据降噪
+  处理概念板块命名不稳定、成分股重叠高、热点切换过快的问题
+```
+
+#### 当前仍有限制的原因
+
+```text
+概念板块和个股映射天然比行业板块更复杂，
 需要额外处理板块数量多、命名不稳定、成分股重叠高的问题。
 
-因此当前版本先把行业板块链路跑稳，
-再补概念板块，以避免在 MVP 初期引入过多噪音。
+所以当前版本先接入热点概念板块，
+让 daily-review 和 stock-move 都能看到题材主线，
+后续再继续补全历史快照和更完整的个股映射。
 ```
 
 ## Forward Test 实现思路
